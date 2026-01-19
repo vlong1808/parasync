@@ -2,7 +2,7 @@
 
 Dead simple file sync between Windows and macOS over SSH. Built for Parallels.
 
-<!-- Screenshot placeholder - add new screenshot showing 3 buttons -->
+![ParaSync Main Interface](imgs/app-screenshot.png)
 
 ## Why?
 
@@ -137,6 +137,36 @@ Push/Pull shows a **diff preview** first so you see exactly what will change. De
 | **PULL** | Makes Windows match Mac exactly | Yes (to trash) |
 
 **SYNC BOTH** is the safest - it merges both folders without deleting anything.
+
+### SYNC BOTH Example
+
+Before sync - files exist on only one side:
+
+![Before Sync](imgs/pre_sync.png)
+
+After sync - both sides have all files:
+
+![After Sync](imgs/post_sync.png)
+
+### PUSH Example
+
+Push copies Windows → Mac, removing Mac-only files:
+
+![Push Dialog](imgs/windows_to_mac_push.png)
+
+After push - Mac matches Windows:
+
+![After Push](imgs/post_windows_to_mac_push.png)
+
+### PULL Example
+
+Pull copies Mac → Windows, removing Windows-only files:
+
+![Pull Dialog](imgs/pull_from_mac.png)
+
+After pull - Windows matches Mac:
+
+![After Pull](imgs/post_pull_from_mac.png)
 
 ---
 

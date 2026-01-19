@@ -499,6 +499,8 @@ class MainWindow(QMainWindow):
 
         self.list_local = QListWidget()
         self.list_local.setMinimumHeight(150)
+        self.list_local.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.list_local.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         left_layout.addWidget(self.list_local)
 
         splitter.addWidget(left_widget)
@@ -524,6 +526,8 @@ class MainWindow(QMainWindow):
 
         self.list_remote = QListWidget()
         self.list_remote.setMinimumHeight(150)
+        self.list_remote.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.list_remote.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         right_layout.addWidget(self.list_remote)
 
         splitter.addWidget(right_widget)
@@ -979,6 +983,6 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("ParaSync")
     w = MainWindow()
-    w.resize(700, 550)
+    w.setFixedSize(700, 550)
     w.show()
     return app.exec()
