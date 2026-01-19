@@ -50,16 +50,24 @@ Should show something like `10.211.55.2` (the app finds this automatically)
 
 Press `Win + X` → **Windows PowerShell** (or Terminal)
 
-#### Step 2: Create a folder for the project
+#### Step 2: Install Python (if not installed)
 
 ```powershell
-mkdir C:\Users\YourUsername\repos -ErrorAction SilentlyContinue
-cd C:\Users\YourUsername\repos
+winget install Python.Python.3.12
+```
+
+**Close and reopen PowerShell** after installing.
+
+Verify it worked:
+```powershell
+python --version
 ```
 
 #### Step 3: Clone the repo
 
 ```powershell
+mkdir $HOME\repos -ErrorAction SilentlyContinue
+cd $HOME\repos
 git clone https://github.com/jguida941/parasync.git
 cd parasync
 ```
