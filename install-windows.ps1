@@ -18,7 +18,16 @@ if (-not (Test-Path ".venv")) {
 # Always reinstall (catches updates)
 .\.venv\Scripts\pip install -e . --quiet
 
-Write-Host ""
-Write-Host "Installed! Run with:"
-Write-Host "  cd $RepoDir"
-Write-Host "  .\.venv\Scripts\parasync-gui"
+# Create desktop shortcut
+$Desktop = [Environment]::GetFolderPath("Desktop")
+$ShortcutPath = "$Desktop\ParaSync.lnk"
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut($ShortcutPath)
+$Shortcut.TargetPath = "powershell.exe"
+$Shortcut.Arguments = "-WindowStyle Hidden -Command `"& '$RepoDir\.venv\Scripts\parasync-gui.exe'`""
+$Shortcut.WorkingDirectory = $RepoDir
+$Shortcut.Save()
+Write-Host "Desktop shortcut created!"
+
+# Launch now
+.\.venv\Scripts\parasync-gui
