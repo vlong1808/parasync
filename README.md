@@ -6,13 +6,13 @@ Dead simple file sync between Windows and macOS over SSH. Built for Parallels.
 
 ## Quick Install (Windows)
 
-Already have Python 3.10+ and Git? One command:
+Already have Python 3.10+ and Git? One command does everything:
 
 ```powershell
 irm https://raw.githubusercontent.com/jguida941/parasync/main/install-windows.ps1 | iex
 ```
 
-Then run: `cd $HOME\repos\parasync; .\.venv\Scripts\parasync-gui`
+This installs, updates, and launches the app. Run it anytime to get the latest version.
 
 ---
 
@@ -79,14 +79,7 @@ winget install Git.Git
 irm https://raw.githubusercontent.com/jguida941/parasync/main/install-windows.ps1 | iex
 ```
 
-This clones the repo, creates a virtual environment, and installs everything.
-
-#### Step 4: Launch the GUI
-
-```powershell
-cd $HOME\repos\parasync
-.\.venv\Scripts\parasync-gui
-```
+This clones, installs, and launches the app. Run it anytime to update.
 
 **Windows side is done.**
 
