@@ -1,0 +1,10 @@
+[project]
+name = "parasync"
+version = "1.0.0"
+description = "Windows <-> macOS folder sync over SSH for Parallels (CLI + PyQt6 GUI)"
+requires-python = ">=3.10"
+dependencies = ["PyQt6>=6.5"]
+
+[project.scripts]
+parasync = "parasync.cli:main"
+parasync-gui = "parasync.gui:main"
