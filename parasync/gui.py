@@ -971,8 +971,13 @@ class MainWindow(QMainWindow):
 
     def _do_auto_push(self):
         if self.watching and not self.current_worker:
-            self._log("Auto-pushing...")
-            self._do_push()
+            if not self.mac_ip or not self.local_path:
+                return
+            if not self.key_ok and not self.ssh_ok:
+                return
+            self._log("Auto-pushing (change detected)...")
+            self._refresh_local()
+            self._run_worker("push")
 
     def closeEvent(self, event):
         self._stop_watch()
