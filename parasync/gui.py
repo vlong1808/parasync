@@ -1,11 +1,11 @@
 """
 ParaSync GUI - Dead simple file sync between Windows and macOS.
 
-UX Goal: User does 2 things:
-1. Pick "Windows -> Mac" once
-2. Drag a folder and click Push
-
-Everything else is automated.
+Features:
+- Shows both local and remote folder contents
+- No terminal commands needed
+- Auto-detects Mac on Parallels network
+- One-click push/pull
 """
 from __future__ import annotations
 
@@ -17,23 +17,27 @@ import os
 from pathlib import Path
 from typing import Optional, List
 
-from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher, pyqtSignal, QObject, QMimeData
+from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QPlainTextEdit,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -42,23 +46,11 @@ from .config import AppConfig, Profile, get_profile, load_config, save_config, u
 from .util import default_config_path, is_windows
 
 
-# ============================================================================
-# Network scanning for auto-detect
-# ============================================================================
-
 def scan_for_ssh_host(subnet: str = "10.211.55", timeout: float = 0.5) -> Optional[str]:
-    """
-    Scan Parallels subnet for a host with SSH (port 22) open.
-    Returns the first IP found, or None.
-    """
-    # Common Parallels Mac IPs
+    """Scan Parallels subnet for SSH host."""
     candidates = [f"{subnet}.2", f"{subnet}.1", f"{subnet}.3"]
-
-    # Add more IPs to scan
-    for i in range(2, 20):
-        ip = f"{subnet}.{i}"
-        if ip not in candidates:
-            candidates.append(ip)
+    for i in range(4, 20):
+        candidates.append(f"{subnet}.{i}")
 
     for ip in candidates:
         try:
@@ -74,19 +66,14 @@ def scan_for_ssh_host(subnet: str = "10.211.55", timeout: float = 0.5) -> Option
 
 
 def get_current_username() -> str:
-    """Get current OS username."""
     return os.environ.get("USER") or os.environ.get("USERNAME") or "user"
 
-
-# ============================================================================
-# Worker thread for background operations
-# ============================================================================
 
 class WorkerSignals(QObject):
     log = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
     progress = pyqtSignal(str)
-    status_update = pyqtSignal(str, str)  # status_type, message
+    file_list = pyqtSignal(list)  # For returning file listings
 
 
 class SyncWorker(threading.Thread):
@@ -105,7 +92,6 @@ class SyncWorker(threading.Thread):
         self.identity_file = identity_file
 
     def _run_cmd(self, cmd: list[str], timeout: int = 300) -> tuple[bool, str, str]:
-        """Run command, return (success, stdout, stderr)."""
         self.signals.log.emit(f"$ {' '.join(cmd)}")
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -141,39 +127,35 @@ class SyncWorker(threading.Thread):
             "setup": self._do_full_setup,
             "push": self._do_push,
             "pull": self._do_pull,
+            "list_remote": self._do_list_remote,
         }
         if self.operation in ops:
             ops[self.operation]()
 
     def _do_scan(self):
-        """Scan for Mac on network."""
         self.signals.progress.emit("Scanning for Mac...")
         ip = scan_for_ssh_host()
         if ip:
             self.signals.finished.emit(True, ip)
         else:
-            self.signals.finished.emit(False, "No Mac found on network. Is Remote Login enabled?")
+            self.signals.finished.emit(False, "No Mac found. Is Remote Login enabled?")
 
     def _do_test(self):
-        """Test SSH connection."""
         self.signals.progress.emit("Testing SSH...")
         cmd = self._ssh_args() + [self._remote(), "echo", "SSH_OK"]
         ok, out, err = self._run_cmd(cmd, timeout=15)
         if ok and "SSH_OK" in out:
             self.signals.finished.emit(True, "Connected!")
         else:
-            # Check if it's a key issue
             if "Permission denied" in err:
-                self.signals.finished.emit(False, "SSH key not set up. Click 'Setup Passwordless' first.")
+                self.signals.finished.emit(False, "Need to setup passwordless SSH first.")
             else:
                 self.signals.finished.emit(False, f"Connection failed: {err or out}")
 
     def _do_full_setup(self):
-        """One-click setup: generate key + install on remote."""
         key_path = Path.home() / ".ssh" / "id_ed25519_parasync"
         pub_path = key_path.with_suffix(".pub")
 
-        # Step 1: Generate key if needed
         if not key_path.exists():
             self.signals.progress.emit("Generating SSH key...")
             key_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,13 +164,9 @@ class SyncWorker(threading.Thread):
             if not ok:
                 self.signals.finished.emit(False, f"Failed to generate key: {err}")
                 return
-            self.signals.log.emit("Generated SSH key")
 
-        # Step 2: Install key on remote (may prompt for password)
         self.signals.progress.emit("Installing key on Mac (enter password if prompted)...")
         pubkey = pub_path.read_text().strip()
-
-        # Don't use BatchMode for this - user needs to enter password
         ssh_args = ["ssh", "-o", "ConnectTimeout=30", "-o", "StrictHostKeyChecking=accept-new"]
         remote_cmd = (
             "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
@@ -200,33 +178,26 @@ class SyncWorker(threading.Thread):
         ok, out, err = self._run_cmd(cmd, timeout=60)
 
         if ok and "SETUP_OK" in out:
-            self.signals.log.emit("Key installed successfully")
-
-            # Step 3: Verify passwordless works
-            self.signals.progress.emit("Verifying passwordless login...")
+            self.signals.progress.emit("Verifying...")
             self.identity_file = str(key_path)
             test_cmd = self._ssh_args(batch_mode=True) + [self._remote(), "echo", "KEY_OK"]
             ok2, out2, err2 = self._run_cmd(test_cmd, timeout=15)
-
             if ok2 and "KEY_OK" in out2:
-                self.signals.finished.emit(True, f"Setup complete! Key: {key_path}")
+                self.signals.finished.emit(True, "Setup complete!")
             else:
                 self.signals.finished.emit(False, f"Key installed but verification failed: {err2}")
         else:
             self.signals.finished.emit(False, f"Failed to install key: {err or out}")
 
     def _do_push(self):
-        """Push local folder to remote."""
-        # Auto-create remote directory
-        self.signals.progress.emit("Preparing remote folder...")
+        self.signals.progress.emit("Creating remote folder...")
         mkdir_cmd = self._ssh_args() + [self._remote(), f"mkdir -p '{self.remote_path}'"]
         ok, out, err = self._run_cmd(mkdir_cmd, timeout=30)
         if not ok:
             self.signals.finished.emit(False, f"Failed to create remote folder: {err}")
             return
 
-        # Copy files
-        self.signals.progress.emit("Copying files...")
+        self.signals.progress.emit("Copying files to Mac...")
         local = Path(self.local_path)
         if not local.exists():
             self.signals.finished.emit(False, f"Local path not found: {local}")
@@ -236,131 +207,36 @@ class SyncWorker(threading.Thread):
         ok, out, err = self._run_cmd(scp_cmd, timeout=600)
 
         if ok:
-            self.signals.finished.emit(True, f"Pushed: {local.name} -> Mac:{self.remote_path}")
+            self.signals.finished.emit(True, f"Pushed: {local.name} → Mac")
         else:
             self.signals.finished.emit(False, f"Push failed: {err}")
 
     def _do_pull(self):
-        """Pull from remote to local."""
-        self.signals.progress.emit("Copying from Mac...")
+        self.signals.progress.emit("Copying files from Mac...")
         local = Path(self.local_path)
         local.mkdir(parents=True, exist_ok=True)
 
-        scp_cmd = self._scp_args() + [f"{self._remote()}:{self.remote_path}", str(local)]
+        scp_cmd = self._scp_args() + [f"{self._remote()}:{self.remote_path}/*", str(local)]
         ok, out, err = self._run_cmd(scp_cmd, timeout=600)
 
         if ok:
-            self.signals.finished.emit(True, f"Pulled: Mac:{self.remote_path} -> {local}")
+            self.signals.finished.emit(True, f"Pulled from Mac → {local.name}")
         else:
             self.signals.finished.emit(False, f"Pull failed: {err}")
 
-
-# ============================================================================
-# Drop Zone Widget
-# ============================================================================
-
-class DropZone(QFrame):
-    """Drag-and-drop zone for folders."""
-
-    pathDropped = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setMinimumHeight(120)
-        self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
-        self._path: str = ""
-        self._update_style(False)
-
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.label = QLabel("Drop folder here\nor click to browse")
-        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        font = QFont()
-        font.setPointSize(14)
-        self.label.setFont(font)
-        layout.addWidget(self.label)
-
-        self.path_label = QLabel("")
-        self.path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.path_label.setWordWrap(True)
-        layout.addWidget(self.path_label)
-
-    def _update_style(self, has_path: bool):
-        if has_path:
-            self.setStyleSheet("""
-                DropZone {
-                    background-color: #e8f5e9;
-                    border: 3px solid #4caf50;
-                    border-radius: 10px;
-                }
-            """)
+    def _do_list_remote(self):
+        """List files in remote directory."""
+        self.signals.progress.emit("Reading Mac folder...")
+        cmd = self._ssh_args() + [self._remote(), f"ls -1 '{self.remote_path}' 2>/dev/null || echo ''"]
+        ok, out, err = self._run_cmd(cmd, timeout=15)
+        if ok:
+            files = [f for f in out.strip().split('\n') if f]
+            self.signals.file_list.emit(files)
+            self.signals.finished.emit(True, "")
         else:
-            self.setStyleSheet("""
-                DropZone {
-                    background-color: #f5f5f5;
-                    border: 3px dashed #999;
-                    border-radius: 10px;
-                }
-                DropZone:hover {
-                    background-color: #e3f2fd;
-                    border-color: #2196f3;
-                }
-            """)
+            self.signals.file_list.emit([])
+            self.signals.finished.emit(False, err)
 
-    def set_path(self, path: str):
-        self._path = path
-        if path:
-            name = Path(path).name
-            self.label.setText(f"Ready to sync:")
-            self.path_label.setText(path)
-            self._update_style(True)
-        else:
-            self.label.setText("Drop folder here\nor click to browse")
-            self.path_label.setText("")
-            self._update_style(False)
-
-    def get_path(self) -> str:
-        return self._path
-
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-            self.setStyleSheet("""
-                DropZone {
-                    background-color: #bbdefb;
-                    border: 3px solid #2196f3;
-                    border-radius: 10px;
-                }
-            """)
-
-    def dragLeaveEvent(self, event):
-        self._update_style(bool(self._path))
-
-    def dropEvent(self, event: QDropEvent):
-        urls = event.mimeData().urls()
-        if urls:
-            path = urls[0].toLocalFile()
-            if Path(path).is_dir():
-                self.set_path(path)
-                self.pathDropped.emit(path)
-            else:
-                # If file dropped, use parent directory
-                self.set_path(str(Path(path).parent))
-                self.pathDropped.emit(str(Path(path).parent))
-
-    def mousePressEvent(self, event):
-        from PyQt6.QtWidgets import QFileDialog
-        path = QFileDialog.getExistingDirectory(self, "Select Folder", str(Path.home()))
-        if path:
-            self.set_path(path)
-            self.pathDropped.emit(path)
-
-
-# ============================================================================
-# Main Window - Single Screen UX
-# ============================================================================
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -372,26 +248,26 @@ class MainWindow(QMainWindow):
         self.mac_user: str = get_current_username()
         self.ssh_ok: bool = False
         self.key_ok: bool = False
+        self.local_path: str = ""
         self.remote_path: str = f"/Users/{self.mac_user}/Parallels_EXCHANGE"
 
         # Config
         self.cfg_path = Path(default_config_path())
         self.cfg = load_config(self.cfg_path)
 
-        # Load saved profile if exists
-        self._saved_local_path = ""
         prof = get_profile(self.cfg, "default")
         if prof:
             self.mac_ip = prof.host
             self.mac_user = prof.user
+            self.local_path = prof.local_path or ""
             self.remote_path = prof.remote_path or self.remote_path
-            self._saved_local_path = prof.local_path or ""
 
         # Worker signals
         self.signals = WorkerSignals()
         self.signals.log.connect(self._log)
         self.signals.finished.connect(self._on_worker_finished)
         self.signals.progress.connect(self._on_progress)
+        self.signals.file_list.connect(self._on_remote_file_list)
 
         self.current_worker: Optional[SyncWorker] = None
         self.pending_operation: str = ""
@@ -406,104 +282,143 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
 
-        # Auto-scan on startup if no IP saved
         if not self.mac_ip:
             QTimer.singleShot(500, self._do_scan)
         else:
             self._update_status()
+            QTimer.singleShot(500, self._refresh_both)
 
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setSpacing(15)
+        layout.setSpacing(10)
 
-        # ===== STATUS SECTION =====
+        # === STATUS BAR ===
         status_frame = QFrame()
         status_frame.setFrameStyle(QFrame.Shape.StyledPanel)
-        status_layout = QVBoxLayout(status_frame)
+        status_layout = QHBoxLayout(status_frame)
 
-        # Mac status line
-        mac_row = QHBoxLayout()
-        mac_row.addWidget(QLabel("Mac:"))
-        self.lbl_mac_status = QLabel("Scanning...")
-        self.lbl_mac_status.setFont(QFont("", -1, QFont.Weight.Bold))
-        mac_row.addWidget(self.lbl_mac_status, 1)
+        status_layout.addWidget(QLabel("Mac:"))
+        self.lbl_mac = QLabel("Scanning...")
+        self.lbl_mac.setFont(QFont("", -1, QFont.Weight.Bold))
+        status_layout.addWidget(self.lbl_mac)
 
-        self.btn_rescan = QPushButton("Rescan")
-        self.btn_rescan.clicked.connect(self._do_scan)
-        mac_row.addWidget(self.btn_rescan)
+        status_layout.addWidget(QLabel("SSH:"))
+        self.lbl_ssh = QLabel("-")
+        status_layout.addWidget(self.lbl_ssh)
 
-        self.btn_edit_connection = QPushButton("Edit")
-        self.btn_edit_connection.clicked.connect(self._edit_connection)
-        mac_row.addWidget(self.btn_edit_connection)
-
-        status_layout.addLayout(mac_row)
-
-        # SSH status line
-        ssh_row = QHBoxLayout()
-        ssh_row.addWidget(QLabel("SSH:"))
-        self.lbl_ssh_status = QLabel("-")
-        ssh_row.addWidget(self.lbl_ssh_status, 1)
+        status_layout.addStretch()
 
         self.btn_setup = QPushButton("Setup Passwordless")
         self.btn_setup.clicked.connect(self._do_setup)
-        ssh_row.addWidget(self.btn_setup)
+        status_layout.addWidget(self.btn_setup)
 
-        status_layout.addLayout(ssh_row)
+        self.btn_rescan = QPushButton("Rescan")
+        self.btn_rescan.clicked.connect(self._do_scan)
+        status_layout.addWidget(self.btn_rescan)
 
         layout.addWidget(status_frame)
 
-        # ===== DROP ZONE =====
-        self.drop_zone = DropZone()
-        self.drop_zone.pathDropped.connect(self._on_path_dropped)
+        # === FILE BROWSERS ===
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Load saved path
-        if self._saved_local_path:
-            self.drop_zone.set_path(self._saved_local_path)
+        # Left: Local (Windows)
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        layout.addWidget(self.drop_zone)
+        left_header = QHBoxLayout()
+        left_header.addWidget(QLabel("LOCAL (Windows):"))
+        self.lbl_local_path = QLabel("Not set")
+        self.lbl_local_path.setStyleSheet("color: gray;")
+        left_header.addWidget(self.lbl_local_path, 1)
+        self.btn_browse_local = QPushButton("Browse...")
+        self.btn_browse_local.clicked.connect(self._browse_local)
+        left_header.addWidget(self.btn_browse_local)
+        self.btn_refresh_local = QPushButton("↻")
+        self.btn_refresh_local.setFixedWidth(30)
+        self.btn_refresh_local.clicked.connect(self._refresh_local)
+        left_header.addWidget(self.btn_refresh_local)
+        left_layout.addLayout(left_header)
 
-        # ===== ACTION BUTTONS =====
-        btn_row = QHBoxLayout()
+        self.list_local = QListWidget()
+        self.list_local.setMinimumHeight(150)
+        left_layout.addWidget(self.list_local)
 
-        self.btn_push = QPushButton("PUSH TO MAC")
-        self.btn_push.setMinimumHeight(60)
-        self.btn_push.setFont(QFont("", 16, QFont.Weight.Bold))
+        splitter.addWidget(left_widget)
+
+        # Right: Remote (Mac)
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        right_header = QHBoxLayout()
+        right_header.addWidget(QLabel("REMOTE (Mac):"))
+        self.lbl_remote_path = QLabel(self.remote_path)
+        self.lbl_remote_path.setStyleSheet("color: gray;")
+        right_header.addWidget(self.lbl_remote_path, 1)
+        self.btn_edit_remote = QPushButton("Edit...")
+        self.btn_edit_remote.clicked.connect(self._edit_remote_path)
+        right_header.addWidget(self.btn_edit_remote)
+        self.btn_refresh_remote = QPushButton("↻")
+        self.btn_refresh_remote.setFixedWidth(30)
+        self.btn_refresh_remote.clicked.connect(self._refresh_remote)
+        right_header.addWidget(self.btn_refresh_remote)
+        right_layout.addLayout(right_header)
+
+        self.list_remote = QListWidget()
+        self.list_remote.setMinimumHeight(150)
+        right_layout.addWidget(self.list_remote)
+
+        splitter.addWidget(right_widget)
+        layout.addWidget(splitter)
+
+        # === ACTION BUTTONS ===
+        btn_layout = QHBoxLayout()
+
+        self.btn_push = QPushButton("PUSH TO MAC →")
+        self.btn_push.setMinimumHeight(50)
+        self.btn_push.setFont(QFont("", 14, QFont.Weight.Bold))
         self.btn_push.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
         self.btn_push.clicked.connect(self._do_push)
-        btn_row.addWidget(self.btn_push)
+        btn_layout.addWidget(self.btn_push)
 
-        self.btn_pull = QPushButton("PULL FROM MAC")
-        self.btn_pull.setMinimumHeight(60)
-        self.btn_pull.setFont(QFont("", 16, QFont.Weight.Bold))
+        self.btn_pull = QPushButton("← PULL FROM MAC")
+        self.btn_pull.setMinimumHeight(50)
+        self.btn_pull.setFont(QFont("", 14, QFont.Weight.Bold))
         self.btn_pull.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
         self.btn_pull.clicked.connect(self._do_pull)
-        btn_row.addWidget(self.btn_pull)
+        btn_layout.addWidget(self.btn_pull)
 
-        layout.addLayout(btn_row)
+        layout.addLayout(btn_layout)
 
-        # ===== WATCH TOGGLE =====
-        watch_row = QHBoxLayout()
-        self.chk_watch = QCheckBox("Auto-push when folder changes")
+        # === WATCH MODE ===
+        watch_layout = QHBoxLayout()
+        self.chk_watch = QCheckBox("Auto-push when local folder changes")
         self.chk_watch.stateChanged.connect(self._toggle_watch)
-        watch_row.addWidget(self.chk_watch)
+        watch_layout.addWidget(self.chk_watch)
         self.lbl_watch = QLabel("")
-        watch_row.addWidget(self.lbl_watch, 1)
-        layout.addLayout(watch_row)
+        watch_layout.addWidget(self.lbl_watch, 1)
+        layout.addLayout(watch_layout)
 
-        # ===== PROGRESS =====
+        # === PROGRESS ===
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.hide()
         layout.addWidget(self.progress)
 
-        # ===== LOG =====
+        # === LOG ===
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setMaximumHeight(100)
+        self.log_box.setMaximumHeight(80)
         self.log_box.setPlaceholderText("Activity log...")
         layout.addWidget(self.log_box)
+
+        # Update display
+        if self.local_path:
+            self.lbl_local_path.setText(self.local_path)
+            self._refresh_local()
 
     def _log(self, msg: str):
         self.log_box.appendPlainText(msg)
@@ -511,26 +426,25 @@ class MainWindow(QMainWindow):
         sb.setValue(sb.maximum())
 
     def _update_status(self):
-        """Update status labels."""
         if self.mac_ip:
-            self.lbl_mac_status.setText(f"{self.mac_user}@{self.mac_ip}")
-            self.lbl_mac_status.setStyleSheet("color: green;")
+            self.lbl_mac.setText(f"{self.mac_user}@{self.mac_ip}")
+            self.lbl_mac.setStyleSheet("color: green;")
         else:
-            self.lbl_mac_status.setText("Not found - click Rescan")
-            self.lbl_mac_status.setStyleSheet("color: red;")
+            self.lbl_mac.setText("Not found")
+            self.lbl_mac.setStyleSheet("color: red;")
 
         if self.key_ok:
-            self.lbl_ssh_status.setText("Passwordless OK")
-            self.lbl_ssh_status.setStyleSheet("color: green;")
+            self.lbl_ssh.setText("Passwordless OK")
+            self.lbl_ssh.setStyleSheet("color: green;")
             self.btn_setup.setEnabled(False)
             self.btn_setup.setText("Ready")
         elif self.ssh_ok:
-            self.lbl_ssh_status.setText("Connected (password required)")
-            self.lbl_ssh_status.setStyleSheet("color: orange;")
+            self.lbl_ssh.setText("Connected")
+            self.lbl_ssh.setStyleSheet("color: orange;")
             self.btn_setup.setEnabled(True)
         else:
-            self.lbl_ssh_status.setText("Not connected")
-            self.lbl_ssh_status.setStyleSheet("color: gray;")
+            self.lbl_ssh.setText("Not connected")
+            self.lbl_ssh.setStyleSheet("color: gray;")
             self.btn_setup.setEnabled(bool(self.mac_ip))
 
     def _set_busy(self, busy: bool, message: str = ""):
@@ -538,6 +452,8 @@ class MainWindow(QMainWindow):
         self.btn_pull.setEnabled(not busy)
         self.btn_setup.setEnabled(not busy and not self.key_ok)
         self.btn_rescan.setEnabled(not busy)
+        self.btn_refresh_local.setEnabled(not busy)
+        self.btn_refresh_remote.setEnabled(not busy)
 
         if busy:
             self.progress.show()
@@ -560,7 +476,6 @@ class MainWindow(QMainWindow):
                 self._log(f"Found Mac at {message}")
                 self._save_profile()
                 self._update_status()
-                # Auto-test SSH
                 self._do_test()
             else:
                 self._log(message)
@@ -569,11 +484,11 @@ class MainWindow(QMainWindow):
         elif op == "test":
             if success:
                 self.ssh_ok = True
-                # Check if key exists to determine if passwordless
                 key_path = Path.home() / ".ssh" / "id_ed25519_parasync"
                 if key_path.exists():
                     self.key_ok = True
                 self._update_status()
+                self._refresh_remote()
             else:
                 self.ssh_ok = False
                 self.key_ok = False
@@ -586,16 +501,40 @@ class MainWindow(QMainWindow):
                 self._log(message)
                 self._update_status()
                 self._save_profile()
+                self._refresh_remote()
             else:
                 self._log(f"Setup failed: {message}")
                 QMessageBox.warning(self, "Setup Failed", message)
 
-        elif op in ("push", "pull"):
+        elif op == "push":
             if success:
                 self._log(message)
+                self._refresh_remote()
             else:
                 self._log(f"Failed: {message}")
-                QMessageBox.warning(self, "Transfer Failed", message)
+                QMessageBox.warning(self, "Push Failed", message)
+
+        elif op == "pull":
+            if success:
+                self._log(message)
+                self._refresh_local()
+            else:
+                self._log(f"Failed: {message}")
+                QMessageBox.warning(self, "Pull Failed", message)
+
+        elif op == "list_remote":
+            if not success and message:
+                self._log(f"Failed to list remote: {message}")
+
+    def _on_remote_file_list(self, files: list):
+        self.list_remote.clear()
+        if not files:
+            item = QListWidgetItem("(empty)")
+            item.setForeground(Qt.GlobalColor.gray)
+            self.list_remote.addItem(item)
+        else:
+            for f in files:
+                self.list_remote.addItem(f)
 
     def _run_worker(self, operation: str, **kwargs):
         if self.current_worker and self.current_worker.is_alive():
@@ -605,12 +544,12 @@ class MainWindow(QMainWindow):
         key_path = Path.home() / ".ssh" / "id_ed25519_parasync"
         identity = str(key_path) if key_path.exists() else ""
 
-        self._set_busy(True, f"{operation.title()}...")
+        self._set_busy(True, f"{operation.replace('_', ' ').title()}...")
         self.current_worker = SyncWorker(
             self.signals, operation,
             host=kwargs.get("host", self.mac_ip),
             user=kwargs.get("user", self.mac_user),
-            local_path=kwargs.get("local_path", self.drop_zone.get_path()),
+            local_path=kwargs.get("local_path", self.local_path),
             remote_path=kwargs.get("remote_path", self.remote_path),
             identity_file=kwargs.get("identity_file", identity),
         )
@@ -627,12 +566,10 @@ class MainWindow(QMainWindow):
         if not self.mac_ip:
             QMessageBox.warning(self, "No Mac", "Scan for Mac first.")
             return
-
         reply = QMessageBox.question(
             self, "Setup Passwordless SSH",
-            f"This will set up passwordless SSH to {self.mac_user}@{self.mac_ip}.\n\n"
-            "You'll be prompted for your Mac password once.\n\n"
-            "Continue?",
+            f"This will setup passwordless SSH to {self.mac_user}@{self.mac_ip}.\n\n"
+            "You'll enter your Mac password once.\n\nContinue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -642,11 +579,11 @@ class MainWindow(QMainWindow):
         if not self.mac_ip:
             QMessageBox.warning(self, "No Mac", "Scan for Mac first.")
             return
-        if not self.drop_zone.get_path():
-            QMessageBox.warning(self, "No Folder", "Drop a folder first.")
+        if not self.local_path:
+            QMessageBox.warning(self, "No Local Path", "Select a local folder first (click Browse).")
             return
         if not self.key_ok and not self.ssh_ok:
-            QMessageBox.warning(self, "Not Connected", "Set up SSH connection first.")
+            QMessageBox.warning(self, "Not Connected", "Setup SSH connection first.")
             return
         self._run_worker("push")
 
@@ -654,67 +591,92 @@ class MainWindow(QMainWindow):
         if not self.mac_ip:
             QMessageBox.warning(self, "No Mac", "Scan for Mac first.")
             return
-        if not self.drop_zone.get_path():
-            QMessageBox.warning(self, "No Folder", "Drop a destination folder first.")
+        if not self.local_path:
+            QMessageBox.warning(self, "No Local Path", "Select a local destination folder first (click Browse).")
             return
         if not self.key_ok and not self.ssh_ok:
-            QMessageBox.warning(self, "Not Connected", "Set up SSH connection first.")
+            QMessageBox.warning(self, "Not Connected", "Setup SSH connection first.")
             return
         self._run_worker("pull")
 
-    def _on_path_dropped(self, path: str):
-        self._log(f"Selected: {path}")
-        self._save_profile()
+    def _browse_local(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Local Folder", str(Path.home()))
+        if path:
+            self.local_path = path
+            self.lbl_local_path.setText(path)
+            self._save_profile()
+            self._refresh_local()
+
+    def _edit_remote_path(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Remote Path")
+        layout = QFormLayout(dialog)
+
+        path_edit = QLineEdit(self.remote_path)
+        layout.addRow("Remote Path:", path_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.remote_path = path_edit.text().strip()
+            self.lbl_remote_path.setText(self.remote_path)
+            self._save_profile()
+            self._refresh_remote()
+
+    def _refresh_local(self):
+        self.list_local.clear()
+        if not self.local_path:
+            item = QListWidgetItem("(no folder selected)")
+            item.setForeground(Qt.GlobalColor.gray)
+            self.list_local.addItem(item)
+            return
+
+        local = Path(self.local_path)
+        if not local.exists():
+            item = QListWidgetItem("(folder not found)")
+            item.setForeground(Qt.GlobalColor.red)
+            self.list_local.addItem(item)
+            return
+
+        files = list(local.iterdir())
+        if not files:
+            item = QListWidgetItem("(empty)")
+            item.setForeground(Qt.GlobalColor.gray)
+            self.list_local.addItem(item)
+        else:
+            for f in sorted(files, key=lambda x: x.name.lower()):
+                name = f.name + ("/" if f.is_dir() else "")
+                self.list_local.addItem(name)
+
+    def _refresh_remote(self):
+        if self.mac_ip and (self.ssh_ok or self.key_ok):
+            self._run_worker("list_remote")
+        else:
+            self.list_remote.clear()
+            item = QListWidgetItem("(not connected)")
+            item.setForeground(Qt.GlobalColor.gray)
+            self.list_remote.addItem(item)
+
+    def _refresh_both(self):
+        self._refresh_local()
+        self._refresh_remote()
 
     def _save_profile(self):
-        """Save current settings to config."""
         prof = Profile(
             name="default",
             host=self.mac_ip,
             user=self.mac_user,
             port=22,
-            local_path=self.drop_zone.get_path(),
+            local_path=self.local_path,
             remote_path=self.remote_path,
             identity_file=str(Path.home() / ".ssh" / "id_ed25519_parasync"),
             ensure_remote_dir=True,
         )
         upsert_profile(self.cfg, prof)
         save_config(self.cfg, self.cfg_path)
-
-    def _edit_connection(self):
-        """Edit Mac connection details."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Edit Connection")
-        layout = QFormLayout(dialog)
-
-        host_edit = QLineEdit(self.mac_ip)
-        host_edit.setPlaceholderText("e.g., 10.211.55.2")
-        layout.addRow("Mac IP:", host_edit)
-
-        user_edit = QLineEdit(self.mac_user)
-        layout.addRow("Username:", user_edit)
-
-        remote_edit = QLineEdit(self.remote_path)
-        layout.addRow("Remote Path:", remote_edit)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addRow(buttons)
-
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.mac_ip = host_edit.text().strip()
-            self.mac_user = user_edit.text().strip()
-            self.remote_path = remote_edit.text().strip()
-            self._save_profile()
-            self._update_status()
-            self._log(f"Updated: {self.mac_user}@{self.mac_ip}")
-            # Re-test connection
-            self.ssh_ok = False
-            self.key_ok = False
-            self._do_test()
 
     def _toggle_watch(self, state: int):
         if state == Qt.CheckState.Checked.value:
@@ -723,16 +685,14 @@ class MainWindow(QMainWindow):
             self._stop_watch()
 
     def _start_watch(self):
-        path = self.drop_zone.get_path()
-        if not path:
-            QMessageBox.warning(self, "No Folder", "Drop a folder first.")
+        if not self.local_path:
+            QMessageBox.warning(self, "No Folder", "Select a local folder first.")
             self.chk_watch.setChecked(False)
             return
-
-        if self.file_watcher.addPath(path):
+        if self.file_watcher.addPath(self.local_path):
             self.watching = True
-            self.lbl_watch.setText(f"Watching for changes...")
-            self._log(f"Watching: {path}")
+            self.lbl_watch.setText("Watching...")
+            self._log(f"Watching: {self.local_path}")
         else:
             self.chk_watch.setChecked(False)
 
@@ -744,7 +704,7 @@ class MainWindow(QMainWindow):
 
     def _on_watch_triggered(self, path: str):
         if self.watching:
-            self._log(f"Change detected in {path}")
+            self._log(f"Change detected: {path}")
             self.debounce_timer.start(2000)
 
     def _do_auto_push(self):
@@ -761,6 +721,6 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("ParaSync")
     w = MainWindow()
-    w.resize(550, 500)
+    w.resize(700, 550)
     w.show()
     return app.exec()
