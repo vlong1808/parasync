@@ -9,6 +9,7 @@ Features:
 """
 from __future__ import annotations
 
+import shutil
 import socket
 import subprocess
 import sys
@@ -190,37 +191,59 @@ class SyncWorker(threading.Thread):
             self.signals.finished.emit(False, f"Failed to install key: {err or out}")
 
     def _do_push(self):
-        self.signals.progress.emit("Creating remote folder...")
-        mkdir_cmd = self._ssh_args() + [self._remote(), f"mkdir -p '{self.remote_path}'"]
-        ok, out, err = self._run_cmd(mkdir_cmd, timeout=30)
-        if not ok:
-            self.signals.finished.emit(False, f"Failed to create remote folder: {err}")
-            return
-
-        self.signals.progress.emit("Copying files to Mac...")
         local = Path(self.local_path)
         if not local.exists():
             self.signals.finished.emit(False, f"Local path not found: {local}")
             return
 
-        scp_cmd = self._scp_args() + [str(local), f"{self._remote()}:{self.remote_path}"]
-        ok, out, err = self._run_cmd(scp_cmd, timeout=600)
+        # Clean and recreate remote folder for true mirror
+        self.signals.progress.emit("Cleaning remote folder...")
+        clean_cmd = self._ssh_args() + [self._remote(),
+            f"rm -rf '{self.remote_path}' && mkdir -p '{self.remote_path}'"]
+        ok, out, err = self._run_cmd(clean_cmd, timeout=30)
+        if not ok:
+            self.signals.finished.emit(False, f"Failed to prepare remote folder: {err}")
+            return
 
-        if ok:
-            self.signals.finished.emit(True, f"Pushed: {local.name} → Mac")
-        else:
-            self.signals.finished.emit(False, f"Push failed: {err}")
+        # Copy all contents
+        self.signals.progress.emit("Syncing files to Mac...")
+        files = list(local.iterdir())
+        if not files:
+            self.signals.finished.emit(True, "Pushed: (empty folder)")
+            return
+
+        # Copy each item in the folder
+        for item in files:
+            scp_cmd = self._scp_args() + [str(item), f"{self._remote()}:{self.remote_path}/"]
+            ok, out, err = self._run_cmd(scp_cmd, timeout=600)
+            if not ok:
+                self.signals.finished.emit(False, f"Push failed on {item.name}: {err}")
+                return
+
+        self.signals.finished.emit(True, f"Synced: {len(files)} items → Mac")
 
     def _do_pull(self):
-        self.signals.progress.emit("Copying files from Mac...")
         local = Path(self.local_path)
+
+        # Clean local folder for true mirror
+        self.signals.progress.emit("Cleaning local folder...")
+        if local.exists():
+            for item in local.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
         local.mkdir(parents=True, exist_ok=True)
 
+        # Get list of remote files
+        self.signals.progress.emit("Syncing files from Mac...")
         scp_cmd = self._scp_args() + [f"{self._remote()}:{self.remote_path}/*", str(local)]
         ok, out, err = self._run_cmd(scp_cmd, timeout=600)
 
         if ok:
-            self.signals.finished.emit(True, f"Pulled from Mac → {local.name}")
+            self.signals.finished.emit(True, f"Synced from Mac → {local.name}")
+        elif "No such file" in err or not err.strip():
+            self.signals.finished.emit(True, "Pulled: (remote folder empty)")
         else:
             self.signals.finished.emit(False, f"Pull failed: {err}")
 
