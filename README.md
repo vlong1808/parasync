@@ -4,6 +4,17 @@ Dead simple file sync between Windows and macOS over SSH. Built for Parallels.
 
 <!-- Screenshot placeholder - add new screenshot showing 3 buttons -->
 
+## Why?
+
+When you're developing in a Windows VM on a Mac (via Parallels), files end up scattered:
+
+- **Build outputs** live on Windows
+- **Test scripts** might be on Mac
+- **Config files** get edited on both sides
+- **Nothing stays in sync** - you forget which version is latest
+
+ParaSync solves this with one-click folder syncing. No shared folders, no cloud services, no confusion about which file is current. Just pick a folder on each side and keep them synced.
+
 ## Quick Install (Windows)
 
 Already have Python 3.10+ and Git? One command does everything:
