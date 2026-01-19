@@ -47,6 +47,77 @@ from .config import AppConfig, Profile, get_profile, load_config, save_config, u
 from .util import default_config_path, is_windows
 
 
+class DiffPreviewDialog(QDialog):
+    """Shows what files will be added, deleted, or overwritten before sync."""
+
+    def __init__(self, parent, direction: str, source_path: str, dest_path: str,
+                 source_files: set, dest_files: set):
+        super().__init__(parent)
+        self.setWindowTitle(f"Confirm {direction}")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(400)
+
+        layout = QVBoxLayout(self)
+
+        # Header
+        header = QLabel(f"<b>{direction}: {source_path}</b><br>→ <b>{dest_path}</b>")
+        layout.addWidget(header)
+
+        # Calculate diff
+        to_add = source_files - dest_files
+        to_delete = dest_files - source_files
+        to_overwrite = source_files & dest_files
+
+        # Summary
+        summary = QLabel(
+            f"<span style='color: green'>+{len(to_add)} to add</span> | "
+            f"<span style='color: red'>-{len(to_delete)} to delete</span> | "
+            f"<span style='color: orange'>~{len(to_overwrite)} to overwrite</span>"
+        )
+        summary.setStyleSheet("font-size: 14px; padding: 10px;")
+        layout.addWidget(summary)
+
+        # File lists
+        list_widget = QListWidget()
+        list_widget.setStyleSheet("font-family: monospace;")
+
+        for f in sorted(to_delete):
+            item = QListWidgetItem(f"DELETE: {f}")
+            item.setForeground(Qt.GlobalColor.red)
+            list_widget.addItem(item)
+
+        for f in sorted(to_add):
+            item = QListWidgetItem(f"ADD:    {f}")
+            item.setForeground(Qt.GlobalColor.darkGreen)
+            list_widget.addItem(item)
+
+        for f in sorted(to_overwrite):
+            item = QListWidgetItem(f"UPDATE: {f}")
+            item.setForeground(Qt.GlobalColor.darkYellow)
+            list_widget.addItem(item)
+
+        if not (to_add or to_delete or to_overwrite):
+            item = QListWidgetItem("(no changes)")
+            item.setForeground(Qt.GlobalColor.gray)
+            list_widget.addItem(item)
+
+        layout.addWidget(list_widget)
+
+        # Info about trash
+        if to_delete:
+            info = QLabel(f"ℹ️ {len(to_delete)} file(s) will be moved to trash")
+            info.setStyleSheet("color: #666; padding: 5px;")
+            layout.addWidget(info)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
 def scan_for_ssh_host(subnet: str = "10.211.55", timeout: float = 0.5) -> Optional[str]:
     """Scan Parallels subnet for SSH host."""
     candidates = [f"{subnet}.2", f"{subnet}.1", f"{subnet}.3"]
@@ -196,11 +267,14 @@ class SyncWorker(threading.Thread):
             self.signals.finished.emit(False, f"Local path not found: {local}")
             return
 
-        # Clean and recreate remote folder for true mirror
-        self.signals.progress.emit("Cleaning remote folder...")
-        clean_cmd = self._ssh_args() + [self._remote(),
-            f"rm -rf '{self.remote_path}' && mkdir -p '{self.remote_path}'"]
-        ok, out, err = self._run_cmd(clean_cmd, timeout=30)
+        # Move existing remote files to Mac trash instead of deleting
+        self.signals.progress.emit("Moving old files to Mac trash...")
+        trash_cmd = self._ssh_args() + [self._remote(),
+            f"mkdir -p ~/.Trash && "
+            f"if [ -d '{self.remote_path}' ] && [ \"$(ls -A '{self.remote_path}' 2>/dev/null)\" ]; then "
+            f"mv '{self.remote_path}'/* ~/.Trash/ 2>/dev/null; fi && "
+            f"mkdir -p '{self.remote_path}'"]
+        ok, out, err = self._run_cmd(trash_cmd, timeout=30)
         if not ok:
             self.signals.finished.emit(False, f"Failed to prepare remote folder: {err}")
             return
@@ -225,14 +299,21 @@ class SyncWorker(threading.Thread):
     def _do_pull(self):
         local = Path(self.local_path)
 
-        # Clean local folder for true mirror
-        self.signals.progress.emit("Cleaning local folder...")
+        # Move local files to trash instead of deleting
+        self.signals.progress.emit("Moving old files to trash...")
+        trash_dir = Path.home() / ".parasync_trash"
+        trash_dir.mkdir(exist_ok=True)
+
         if local.exists():
             for item in local.iterdir():
-                if item.is_dir():
-                    shutil.rmtree(item)
-                else:
-                    item.unlink()
+                dest = trash_dir / item.name
+                # If already exists in trash, add number suffix
+                if dest.exists():
+                    i = 1
+                    while dest.exists():
+                        dest = trash_dir / f"{item.stem}_{i}{item.suffix}"
+                        i += 1
+                shutil.move(str(item), str(dest))
         local.mkdir(parents=True, exist_ok=True)
 
         # Get list of remote files
@@ -608,13 +689,25 @@ class MainWindow(QMainWindow):
         if not self.key_ok and not self.ssh_ok:
             QMessageBox.warning(self, "Not Connected", "Setup SSH connection first.")
             return
-        reply = QMessageBox.warning(
-            self, "Confirm Push",
-            f"This will DELETE everything in:\n{self.remote_path}\n\n"
-            f"And replace it with contents of:\n{self.local_path}\n\nContinue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+
+        # Get file lists for diff preview
+        local_files = set()
+        local = Path(self.local_path)
+        if local.exists():
+            local_files = {f.name for f in local.iterdir()}
+
+        remote_files = set()
+        for i in range(self.list_remote.count()):
+            item = self.list_remote.item(i)
+            if item and item.text() not in ["(empty)", "(not connected)"]:
+                remote_files.add(item.text())
+
+        # Show diff preview
+        dialog = DiffPreviewDialog(
+            self, "PUSH", self.local_path, self.remote_path,
+            local_files, remote_files
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             self._run_worker("push")
 
     def _do_pull(self):
@@ -627,13 +720,25 @@ class MainWindow(QMainWindow):
         if not self.key_ok and not self.ssh_ok:
             QMessageBox.warning(self, "Not Connected", "Setup SSH connection first.")
             return
-        reply = QMessageBox.warning(
-            self, "Confirm Pull",
-            f"This will DELETE everything in:\n{self.local_path}\n\n"
-            f"And replace it with contents of:\n{self.remote_path}\n\nContinue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+
+        # Get file lists for diff preview
+        local_files = set()
+        local = Path(self.local_path)
+        if local.exists():
+            local_files = {f.name for f in local.iterdir()}
+
+        remote_files = set()
+        for i in range(self.list_remote.count()):
+            item = self.list_remote.item(i)
+            if item and item.text() not in ["(empty)", "(not connected)"]:
+                remote_files.add(item.text())
+
+        # Show diff preview (source is remote, dest is local for pull)
+        dialog = DiffPreviewDialog(
+            self, "PULL", self.remote_path, self.local_path,
+            remote_files, local_files
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             self._run_worker("pull")
 
     def _browse_local(self):
