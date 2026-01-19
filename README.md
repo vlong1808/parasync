@@ -2,6 +2,8 @@
 
 Dead simple file sync between Windows and macOS over SSH. Built for Parallels.
 
+![ParaSync App](imgs/app-screenshot.png)
+
 ## The Experience
 
 1. **Launch the app**
