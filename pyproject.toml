@@ -12,3 +12,6 @@ dependencies = ["PyQt6>=6.5"]
 [project.scripts]
 parasync = "parasync.cli:main"
 parasync-gui = "parasync.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["parasync*"]
