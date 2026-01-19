@@ -564,7 +564,7 @@ class MainWindow(QMainWindow):
 
         # === WATCH MODE ===
         watch_layout = QHBoxLayout()
-        self.chk_watch = QCheckBox("Auto-push when local folder changes")
+        self.chk_watch = QCheckBox("Auto-sync when local folder changes (safe, no deletes)")
         self.chk_watch.stateChanged.connect(self._toggle_watch)
         watch_layout.addWidget(self.chk_watch)
         self.lbl_watch = QLabel("")
@@ -970,14 +970,15 @@ class MainWindow(QMainWindow):
             self.debounce_timer.start(2000)
 
     def _do_auto_push(self):
+        """Auto-sync uses SYNC mode (merge only, no deletes) for safety."""
         if self.watching and not self.current_worker:
             if not self.mac_ip or not self.local_path:
                 return
             if not self.key_ok and not self.ssh_ok:
                 return
-            self._log("Auto-pushing (change detected)...")
+            self._log("Auto-syncing (change detected)...")
             self._refresh_local()
-            self._run_worker("push")
+            self._run_worker("sync")  # Use sync, not push - no deletes
 
     def closeEvent(self, event):
         self._stop_watch()
